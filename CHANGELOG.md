@@ -7,8 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-- **`komposconfig.tfe.workspaces_config.group_by`** — optional dotted path inside the workspace block (e.g. `organization`). Its resolved value becomes a subdirectory: `generated/workspaces/{value}/{instance}.workspace.yaml`, so each TFE organization's workspace manager can watch only its own manifests. Copies of the same workspace file left in the flat directory or under another group are removed on generation. A missing, unresolved or unsafe value fails the composition. Unset keeps the flat layout.
+### Changed
+- **Interpolated `workspaces_sub_dir`** — `komposconfig.tfe.workspaces_config.workspaces_sub_dir` is read from the layered config, so it can interpolate per composition (e.g. `"workspaces/{{project.name}}"` → `generated/workspaces/<project>/<instance>.workspace.yaml`). Lets each TFE organization's workspace manager watch only its own manifests. An unresolved value fails the composition. Static values behave as before.
 
 ## [0.12.9] - 2026-10-02
 

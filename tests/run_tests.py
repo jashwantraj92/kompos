@@ -825,89 +825,66 @@ def test_tfe_generates_workspaces():
 
 
 @contextlib.contextmanager
-def _tfe_example_with_group_by(group_by, organization):
-    """Copy of the TFE example with workspaces_config.group_by set and an
-    `organization` field on the workspace block. Yields the copy's root."""
+def _tfe_example_with_workspaces_sub_dir(sub_dir):
+    """Copy of the TFE example with workspaces_config.workspaces_sub_dir overridden.
+    Yields the copy's root."""
     import shutil
     with tempfile.TemporaryDirectory() as tmpdir:
         root = Path(tmpdir) / "example"
         shutil.copytree(TFE_EXAMPLE, root, ignore=shutil.ignore_patterns("generated", ".kompos-runtime"))
         komposconfig = root / ".komposconfig.yaml"
         text = komposconfig.read_text()
-        anchor = '      workspace_extension: ".workspace.yaml"\n'
+        anchor = '      workspaces_sub_dir:  "workspaces"\n'
         assert anchor in text, "TFE example komposconfig changed; update this test"
-        komposconfig.write_text(text.replace(anchor, anchor + f'      group_by: "{group_by}"\n'))
-        defaults = root / "data" / "default.yaml"
-        text = defaults.read_text()
-        anchor = '  - name: "{{cluster.fullName}}"\n'
-        assert anchor in text, "TFE example default.yaml changed; update this test"
-        defaults.write_text(text.replace(anchor, anchor + f'    organization: "{organization}"\n'))
+        komposconfig.write_text(text.replace(anchor, f'      workspaces_sub_dir:  "{sub_dir}"\n'))
         yield root
 
 
-def test_tfe_workspaces_group_by():
-    """workspaces_config.group_by writes workspaces/<group>/ and removes stale flat copies"""
-    print("5.4b Testing TFE workspaces_config.group_by...")
+def test_tfe_workspaces_sub_dir_interpolation():
+    """workspaces_sub_dir interpolates per composition (incl. paused workspaces)"""
+    print("5.4b Testing TFE workspaces_sub_dir interpolation...")
     if not TFE_CONFIG_DEV.exists():
         print("  ⊘ Skipped (TFE example not found)")
         return
 
-    with _tfe_example_with_group_by("0.organization", "org_{{environment}}") as root:
-        config = root / TFE_CONFIG_DEV.relative_to(TFE_EXAMPLE)
+    with _tfe_example_with_workspaces_sub_dir("workspaces/{{environment}}") as root:
         workspaces = root / "generated" / "workspaces"
-        workspaces.mkdir(parents=True)
-        # Leftovers from the flat layout and from a previous group value
-        stale_flat = workspaces / "demo-dev-usw2-cluster-01.workspace.yaml"
-        stale_group = workspaces / "org_old" / "demo-dev-usw2-cluster-01.workspace.yaml"
-        unrelated = workspaces / "other.workspace.yaml"
-        stale_group.parent.mkdir()
-        for path in (stale_flat, stale_group, unrelated):
-            path.write_text("stale\n")
-
-        result = run_kompos([str(config), "tfe", "generate", "--workspace-only"], cwd=str(root))
+        dev = root / TFE_CONFIG_DEV.relative_to(TFE_EXAMPLE)
+        result = run_kompos([str(dev), "tfe", "generate", "--workspace-only"], cwd=str(root))
         output = result.stdout + result.stderr
-        assert result.returncode == 0, f"group_by generation failed:\n{output}"
-        grouped = workspaces / "org_dev" / "demo-dev-usw2-cluster-01.workspace.yaml"
-        assert grouped.exists(), f"Expected grouped workspace {grouped}:\n{output}"
-        assert "org_dev" in grouped.read_text(), "Grouped workspace should carry the resolved value"
-        assert not stale_flat.exists(), "Stale flat workspace copy should be removed"
-        assert not stale_group.exists(), "Workspace copy under a previous group should be removed"
-        assert unrelated.exists(), "Unrelated workspace files must be left alone"
+        assert result.returncode == 0, f"Interpolated workspaces_sub_dir failed:\n{output}"
+        expected = workspaces / "dev" / "demo-dev-usw2-cluster-01.workspace.yaml"
+        assert expected.exists(), f"Expected workspace {expected}:\n{output}"
 
-        # Paused compositions still emit their workspace, into the group directory
+        # Paused compositions still emit their workspace, into their own resolved dir
         prod = root / TFE_CONFIG_PROD.relative_to(TFE_EXAMPLE)
         with _composition_enabled_override(prod / "composition.yaml", "false"):
             result = run_kompos([str(prod), "tfe", "generate"], cwd=str(root))
         output = result.stdout + result.stderr
-        assert result.returncode == 0, f"Paused group_by generation failed:\n{output}"
-        paused = workspaces / "org_prod" / "demo-prod-use1-cluster-02.workspace.yaml"
+        assert result.returncode == 0, f"Paused interpolated workspaces_sub_dir failed:\n{output}"
+        paused = workspaces / "prod" / "demo-prod-use1-cluster-02.workspace.yaml"
         assert paused.exists(), f"Expected paused workspace {paused}:\n{output}"
-    print("  ✓ group_by writes workspaces/<group>/ (incl. paused) and removes stale copies")
+        assert not list(workspaces.glob("*.workspace.yaml")), "Nothing should land in the flat dir"
+    print("  ✓ workspaces_sub_dir resolves per composition (workspaces/dev, workspaces/prod)")
 
 
-def test_tfe_workspaces_group_by_invalid_fails():
-    """workspaces_config.group_by with a missing or unsafe value fails the build"""
-    print("5.4c Testing TFE workspaces_config.group_by rejects bad values...")
+def test_tfe_workspaces_sub_dir_unresolved_fails():
+    """workspaces_sub_dir with an unresolvable interpolation fails without writing"""
+    print("5.4c Testing TFE workspaces_sub_dir unresolved interpolation fails...")
     if not TFE_CONFIG_DEV.exists():
         print("  ⊘ Skipped (TFE example not found)")
         return
 
-    cases = [
-        ("0.does_not_exist", "org", "missing key"),
-        ("0.organization", "../escape", "path traversal"),
-        ("0.organization", "", "empty value"),
-    ]
-    for group_by, organization, label in cases:
-        with _tfe_example_with_group_by(group_by, organization) as root:
-            config = root / TFE_CONFIG_DEV.relative_to(TFE_EXAMPLE)
-            result = run_kompos([str(config), "tfe", "generate", "--workspace-only"], cwd=str(root))
-            output = result.stdout + result.stderr
-            assert result.returncode != 0, f"group_by {label} should fail:\n{output}"
-            assert "workspaces_config.group_by" in output, f"group_by {label} should explain:\n{output}"
-            written = list((root / "generated").rglob("*.workspace.yaml")) if (root / "generated").exists() else []
-            assert not written, f"group_by {label} must not write workspaces: {written}"
-    print("  ✓ group_by rejects missing, empty and unsafe values")
-
+    with _tfe_example_with_workspaces_sub_dir("workspaces/{{does.not_exist}}") as root:
+        dev = root / TFE_CONFIG_DEV.relative_to(TFE_EXAMPLE)
+        result = run_kompos([str(dev), "tfe", "generate", "--workspace-only"], cwd=str(root))
+        output = result.stdout + result.stderr
+        assert result.returncode != 0, f"Unresolved workspaces_sub_dir should fail:\n{output}"
+        assert "workspaces_sub_dir" in output, f"Should explain the failure:\n{output}"
+        generated = root / "generated"
+        written = list(generated.rglob("*.workspace.yaml")) if generated.exists() else []
+        assert not written, f"Unresolved workspaces_sub_dir must not write workspaces: {written}"
+    print("  ✓ unresolved workspaces_sub_dir fails with no workspace written")
 
 def test_tfe_multi_cluster():
     """Test dev and prod cluster configs both exist and have expected structure"""
@@ -2297,8 +2274,8 @@ def main():
             test_tfe_generates_tfvars,
             test_tfe_generates_versioned_compositions,
             test_tfe_generates_workspaces,
-            test_tfe_workspaces_group_by,
-            test_tfe_workspaces_group_by_invalid_fails,
+            test_tfe_workspaces_sub_dir_interpolation,
+            test_tfe_workspaces_sub_dir_unresolved_fails,
             test_tfe_multi_cluster,
             test_composition_enabled_false_pauses_workspace,
             test_composition_enabled_true_generates,
