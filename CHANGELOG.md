@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`komposconfig.tfe.workspaces_config.group_by`** — optional dotted path inside the workspace block (e.g. `organization`). Its resolved value becomes a subdirectory: `generated/workspaces/{value}/{instance}.workspace.yaml`, so each TFE organization's workspace manager can watch only its own manifests. Copies of the same workspace file left in the flat directory or under another group are removed on generation. A missing, unresolved or unsafe value fails the composition. Unset keeps the flat layout.
+
 ## [0.12.9] - 2026-10-02
 
 ### Added

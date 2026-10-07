@@ -8,8 +8,10 @@
 # OF ANY KIND, either express or implied. See the License for the specific language
 # governing permissions and limitations under the License.
 
+import glob
 import logging
 import os
+import re
 import time
 
 from kompos.parser import SubParserConfig
@@ -19,6 +21,9 @@ from kompos.helpers import console
 logger = logging.getLogger(__name__)
 
 RUNNER_TYPE = "tfe"
+
+# A workspaces_config.group_by value becomes one directory name: no separators, no "." / "..".
+WORKSPACE_GROUP_RE = re.compile(r'^[A-Za-z0-9_][A-Za-z0-9_.-]*$')
 
 
 class TFEParserConfig(SubParserConfig):
@@ -66,6 +71,7 @@ Examples:
 Output:
   - Composition files: generated/{composition_type}/{instance}/
   - Workspace config:  generated/workspaces/{instance}.workspace.yaml
+                       (generated/workspaces/{group}/{instance}.workspace.yaml with workspaces_config.group_by)
   - Tfvars file:       generated/{composition_type}/{instance}/generated.tfvars.yaml
 
 For more information, see: docs/GUIDE.md
@@ -95,6 +101,9 @@ class TFERunner(GenericTerraformRunner):
             self.runner_type, 'generation_config.base_output_dir', './generated')
         workspaces_subdir = workspace_config.get('workspaces_sub_dir', 'workspaces')
         self.workspaces_dir = os.path.join(base_output_dir, workspaces_subdir)
+        # Optional: dotted path inside the workspace block (e.g. "organization") whose
+        # resolved value becomes a subdirectory: {workspaces_dir}/{value}/{instance}.workspace.yaml
+        self.workspace_group_by = workspace_config.get('group_by')
         
         self.workspace_extension = workspace_config.get('workspace_extension', '.workspace.yaml')
         self.workspace_format = self.extract_format_from_extension(self.workspace_extension)
@@ -159,7 +168,8 @@ class TFERunner(GenericTerraformRunner):
 
         # Generate workspace config file
         if generate_workspace:
-            self.generate_workspace_config(config_path, raw_config, instance_name=instance)
+            if not self.generate_workspace_config(config_path, raw_config, instance_name=instance):
+                return 1
             config_files += 1
 
         # Print summary with metrics
@@ -196,7 +206,8 @@ class TFERunner(GenericTerraformRunner):
         console.print_status(
             f"  {console.Colors.YELLOW}↳{console.Colors.RESET} '{composition}' "
             f"{console.Colors.DIM}paused (composition.enabled: false): workspace only, infra frozen{console.Colors.RESET}")
-        self.generate_workspace_config(config_path, raw_config, instance_name=instance)
+        if not self.generate_workspace_config(config_path, raw_config, instance_name=instance):
+            return 1
         return 0
 
     def generate_composition(self, composition, raw_config, instance_name=None):
@@ -304,16 +315,24 @@ class TFERunner(GenericTerraformRunner):
         console.print_file_generation("tfvars", output_file)
 
     def generate_workspace_config(self, config_path, raw_config, instance_name=None):
-        """Generate the workspace configuration file for TFE workspace creation"""
+        """Generate the workspace configuration file for TFE workspace creation.
+
+        Returns False when the workspace cannot be placed (invalid group_by value).
+        """
         workspace_name = instance_name or self.get_composition_name(raw_config)
         if not workspace_name:
-            return
+            return True
+
+        filename = f'{workspace_name}{self.workspace_extension}'
+        workspaces_dir = self.workspaces_dir
+        if self.workspace_group_by:
+            group = self.resolve_workspace_group(raw_config, workspace_name)
+            if not group:
+                return False
+            workspaces_dir = os.path.join(workspaces_dir, group)
 
         # Build output file path
-        output_file = self.build_output_path(
-            base_dir=self.workspaces_dir,
-            filename=f'{workspace_name}{self.workspace_extension}'
-        )
+        output_file = self.build_output_path(base_dir=workspaces_dir, filename=filename)
 
         # Ensure output directory exists
         self.ensure_directory(output_file, is_file_path=True)
@@ -328,6 +347,45 @@ class TFERunner(GenericTerraformRunner):
         )
         
         console.print_file_generation("workspace", output_file)
+
+        if self.workspace_group_by:
+            self.remove_stale_workspace_copies(filename, keep=output_file)
+        return True
+
+    def resolve_workspace_group(self, raw_config, workspace_name):
+        """Directory name for a workspace from workspaces_config.group_by.
+
+        Prints an error and returns None when the value is missing, unresolved, or not a
+        safe single directory name: writing the file elsewhere would hide it from whatever
+        consumes the group directory.
+        """
+        key_path = f'{self.workspace_config_key}.{self.workspace_group_by}'
+        value = self.get_nested_value(raw_config, key_path)
+        group = '' if value is None else str(value).strip()
+        if '{{' not in group and WORKSPACE_GROUP_RE.match(group):
+            return group
+        console.print_error(
+            f"Cannot resolve workspaces_config.group_by for workspace '{workspace_name}'",
+            details=[
+                f"  {key_path}: {value!r}",
+                "  Expected a non-empty directory name (letters, digits, '_', '.', '-').",
+                f"  Config path: {self.config_path}",
+            ])
+        return None
+
+    def remove_stale_workspace_copies(self, filename, keep):
+        """Remove copies of a workspace file outside its current group directory.
+
+        Covers switching an existing flat layout to group_by, and a workspace whose group
+        value changed, so no workspace is defined in two places.
+        """
+        candidates = [os.path.join(self.workspaces_dir, filename)]
+        candidates += glob.glob(os.path.join(
+            glob.escape(self.workspaces_dir), '*', glob.escape(filename)))
+        for path in candidates:
+            if os.path.isfile(path) and os.path.abspath(path) != os.path.abspath(keep):
+                os.remove(path)
+                console.print_warning(f"Removed stale workspace config: {path}")
 
     @staticmethod
     def execution(args, extra_args, default_output_path, composition, raw_config):

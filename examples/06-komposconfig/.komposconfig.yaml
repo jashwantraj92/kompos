@@ -61,6 +61,11 @@ komposconfig:
       config_key:          "workspace"
       workspaces_sub_dir:  "workspaces"
       workspace_extension: ".workspace.yaml"
+      # group_by — optional dotted path inside the workspace block. Its resolved value
+      # becomes a subdirectory, e.g. one per TFE organization:
+      # Result:   generated/workspaces/{organization}/{instance}.workspace.yaml
+      # Without:  generated/workspaces/{instance}.workspace.yaml
+      # group_by: "organization"
     tfvars_config:
       extension: ".tfvars.yaml"
       filename:  "generated"
