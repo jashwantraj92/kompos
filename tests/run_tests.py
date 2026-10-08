@@ -886,6 +886,31 @@ def test_tfe_workspaces_sub_dir_unresolved_fails():
         assert not written, f"Unresolved workspaces_sub_dir must not write workspaces: {written}"
     print("  ✓ unresolved workspaces_sub_dir fails with no workspace written")
 
+
+def test_komposconfig_get_workspaces_dir():
+    """KomposConfig.get_workspaces_dir(): layered value, static fallback, unresolved"""
+    print("5.4d Testing KomposConfig.get_workspaces_dir()...")
+    from kompos.komposconfig import KomposConfig
+    from kompos.runner import GenericRunner
+
+    kc = KomposConfig.__new__(KomposConfig)
+    kc.config = {'komposconfig': {'tfe': {'workspaces_config': {'workspaces_sub_dir': 'static-ws'}}}}
+    get = GenericRunner.get_nested_value
+
+    def layered(sub_dir):
+        return {'komposconfig': {'tfe': {'workspaces_config': {'workspaces_sub_dir': sub_dir}}}}
+
+    resolved = kc.get_workspaces_dir('tfe', layered('workspaces/aip-inference'), get)
+    assert resolved == os.path.join('./generated', 'workspaces/aip-inference'), resolved
+    fallback = kc.get_workspaces_dir('tfe', {}, get)
+    assert fallback == os.path.join('./generated', 'static-ws'), fallback
+    assert kc.get_workspaces_dir('tfe', layered('workspaces/{{project.name}}'), get) is None
+
+    kc.config = {'komposconfig': {}}
+    default = kc.get_workspaces_dir('tfe', {}, get)
+    assert default == os.path.join('./generated', 'workspaces'), default
+    print("  ✓ layered value wins, static/default fallback, unresolved returns None")
+
 def test_tfe_multi_cluster():
     """Test dev and prod cluster configs both exist and have expected structure"""
     print("5.5 Testing multi-cluster configs...")
@@ -2276,6 +2301,7 @@ def main():
             test_tfe_generates_workspaces,
             test_tfe_workspaces_sub_dir_interpolation,
             test_tfe_workspaces_sub_dir_unresolved_fails,
+            test_komposconfig_get_workspaces_dir,
             test_tfe_multi_cluster,
             test_composition_enabled_false_pauses_workspace,
             test_composition_enabled_true_generates,

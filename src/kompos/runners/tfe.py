@@ -91,12 +91,6 @@ class TFERunner(GenericTerraformRunner):
         self.generate_workspaces = workspace_config.get('generate', True)
         self.workspace_config_key = workspace_config.get('config_key', 'workspace')
         
-        # Build workspaces directory from base + subdir
-        self.workspace_base_output_dir = self.kompos_config.get_runtime_setting(
-            self.runner_type, 'generation_config.base_output_dir', './generated')
-        workspaces_subdir = workspace_config.get('workspaces_sub_dir', 'workspaces')
-        self.workspaces_dir = os.path.join(self.workspace_base_output_dir, workspaces_subdir)
-        
         self.workspace_extension = workspace_config.get('workspace_extension', '.workspace.yaml')
         self.workspace_format = self.extract_format_from_extension(self.workspace_extension)
 
@@ -315,21 +309,14 @@ class TFERunner(GenericTerraformRunner):
         if not workspace_name:
             return True
 
-        # .komposconfig.yaml is part of the layered config, so workspaces_sub_dir may
-        # interpolate per composition (e.g. "workspaces/{{project.name}}").
-        workspaces_subdir = self.get_nested_value(
-            raw_config, f"komposconfig.{self.runner_type}.workspaces_config.workspaces_sub_dir")
-        if workspaces_subdir is not None and '{{' in str(workspaces_subdir):
+        workspaces_dir = self.kompos_config.get_workspaces_dir(
+            self.runner_type, raw_config, self.get_nested_value)
+        if not workspaces_dir:
             console.print_error(
                 f"Cannot resolve workspaces_sub_dir for workspace '{workspace_name}'",
-                details=[f"  workspaces_sub_dir: {workspaces_subdir!r}",
+                details=[f"  Key: komposconfig.{self.runner_type}.workspaces_config.workspaces_sub_dir",
                          f"  Config path: {self.config_path}"])
             return False
-        workspaces_dir = (
-            os.path.join(self.workspace_base_output_dir, str(workspaces_subdir))
-            if workspaces_subdir is not None
-            else self.workspaces_dir
-        )
 
         # Build output file path
         output_file = self.build_output_path(
